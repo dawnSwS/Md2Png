@@ -1,0 +1,28 @@
+[package]
+name = "md2png"
+version = "2.0.0"
+edition = "2021"
+description = "A pure Rust Markdown to PNG renderer powered by Typst"
+
+[dependencies]
+pulldown-cmark = { version = "=0.13.4", default-features = false }
+# Use a documented Result<String, String> conversion API.
+tex2typst-rs = "=0.4.1"
+# Keep Typst crates on exactly the same patch release.
+typst = "=0.15.1"
+typst-layout = "=0.15.1"
+typst-render = "=0.15.1"
+typst-assets = { version = "=0.15.1", features = ["fonts"] }
+
+[target.'cfg(windows)'.dependencies]
+arboard = { version = "=3.6.1", default-features = false }
+msgbox = "=0.7.0"
+
+[build-dependencies]
+winres = "=0.1.12"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+# Keep unwinding enabled so a failed third-party math conversion can be caught.

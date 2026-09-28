@@ -1,0 +1,100 @@
+name: Build Native Engine Installer
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    env:
+      CARGO_TERM_COLOR: always
+      MD2PNG_NO_DIALOG: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup override set stable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Prepare application icon
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --location --retry 3 \
+            "https://raw.githubusercontent.com/googlefonts/noto-emoji/v2020-09-16-unicode13_1/png/128/emoji_u1f5bc.png" \
+            -o app_icon.png
+          magick app_icon.png -define icon:auto-resize=64,48,32,16 app_icon.ico
+          test -s app_icon.ico
+
+      - name: Set build version
+        if: github.event_name != 'pull_request'
+        run: |
+          $manifest = Get-Content -LiteralPath Cargo.toml -Raw
+          $package = [regex]::Match($manifest, '(?ms)^\[package\][^\r\n]*\r?\n(?<body>.*?)(?=^\[|\z)')
+          if (-not $package.Success) { throw '[package] section not found in Cargo.toml' }
+
+          $versionMatch = [regex]::Match($package.Groups['body'].Value, '(?m)^version[ \t]*=[ \t]*["''](?<version>\d+\.\d+\.\d+(?:[-+][^"'']*)?)["''][ \t]*(?:#[^\r\n]*)?\r?$')
+          if (-not $versionMatch.Success) { throw 'Package version not found in Cargo.toml' }
+
+          $current = $versionMatch.Groups['version'].Value
+          if ($current -notmatch '^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$') { throw 'Package version must be semantic versioning' }
+          $major = [int]$Matches[1]
+          $minor = [int]$Matches[2]
+          $build = [int]$env:GITHUB_RUN_NUMBER
+          if ($major -gt 65535 -or $minor -gt 65535 -or $build -gt 65535) { throw 'Windows version components must be <= 65535' }
+
+          $version = "$major.$minor.$build"
+          $body = $package.Groups['body'].Value
+          $pattern = '(?m)^(?<prefix>version[ \t]*=[ \t]*)["''].*?["''](?<suffix>[ \t]*(?:#[^\r\n]*)?\r?)$'
+          $evaluator = [System.Text.RegularExpressions.MatchEvaluator]{
+            param($m)
+            $m.Groups['prefix'].Value + '"' + $version + '"' + $m.Groups['suffix'].Value
+          }
+          $newBody = [regex]::Replace($body, $pattern, $evaluator, 1)
+          $bodyStart = $package.Groups['body'].Index
+          $updated = $manifest.Substring(0, $bodyStart) + $newBody + $manifest.Substring($bodyStart + $package.Groups['body'].Length)
+          [System.IO.File]::WriteAllText((Resolve-Path Cargo.toml), $updated, [System.Text.UTF8Encoding]::new($false))
+
+          "BUILD_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Build version: $version"
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Build binary
+        run: cargo build --release
+
+      - name: Compile installer
+        if: github.event_name != 'pull_request'
+        run: |
+          $command = Get-Command iscc.exe -ErrorAction SilentlyContinue
+          $iscc = if ($command) { $command.Source } else {
+            Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) { throw 'Inno Setup 6 compiler not found' }
+          & $iscc "/DMyAppVersion=$env:BUILD_VERSION" "/OOutput" "/FMd2Png_Setup_v$env:BUILD_VERSION" installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload installer
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Md2Png_Setup_v${{ env.BUILD_VERSION }}
+          path: Output/*.exe
+          if-no-files-found: error
+          retention-days: 7

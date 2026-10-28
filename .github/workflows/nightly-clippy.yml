@@ -1,0 +1,62 @@
+name: Nightly Clippy
+
+"on":
+  schedule:
+    # Run off the hour to reduce scheduling delays; follows local DST changes.
+    - cron: '17 3 * * *'
+      timezone: America/Los_Angeles
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-clippy-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+  # Typst is large; keep CI compilation within hosted-runner memory limits.
+  CARGO_BUILD_JOBS: '2'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  MD2PNG_NO_DIALOG: '1'
+
+jobs:
+  clippy:
+    name: Clippy and tests (${{ matrix.os }}, nightly)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install nightly Rust and Clippy
+        run: rustup toolchain install nightly --profile minimal --component clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: nightly-${{ matrix.os }}
+
+      - name: Resolve dependencies for this run
+        run: cargo +nightly generate-lockfile
+
+      - name: Deny all compiler and Clippy warnings
+        run: cargo +nightly clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run regression tests
+        run: cargo +nightly test --locked --all-targets --all-features

@@ -1,0 +1,51 @@
+[package]
+name = "md2png"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.92"
+description = "A pure Rust Markdown to PNG renderer powered by Typst"
+
+[dependencies]
+pulldown-cmark = { version = "=0.13.4", default-features = false }
+# Use a documented Result<String, String> conversion API.
+tex2typst-rs = "=0.4.1"
+# Keep Typst crates on exactly the same patch release.
+typst = "=0.15.1"
+typst-layout = "=0.15.1"
+typst-render = "=0.15.1"
+typst-assets = { version = "=0.15.1", features = ["fonts"] }
+# Match Typst's raster dependencies for bounded embedded-image sampling.
+comemo = "=0.5.1"
+resvg = { version = "=0.47.0", default-features = false }
+tiny-skia = "=0.12.0"
+
+[target.'cfg(windows)'.dependencies]
+arboard = { version = "=3.6.1", default-features = false }
+msgbox = "=0.7.0"
+
+[build-dependencies]
+winres = "=0.1.12"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+# Keep unwinding enabled so a failed third-party math conversion can be caught.
+panic = "unwind"
+
+# Lint levels belong in Cargo.toml; the corresponding thresholds live in
+# clippy.toml. Keep these checks identical for the library, binary, and tests.
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+indexing_slicing = "deny"
+as_conversions = "deny"
+clone_on_ref_ptr = "deny"
+cognitive_complexity = "deny"
+redundant_clone = "deny"

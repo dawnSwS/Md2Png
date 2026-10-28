@@ -1,0 +1,5 @@
+# Typst 0.15.1 requires Rust 1.92. Keep this aligned with package.rust-version.
+msrv = "1.92"
+cognitive-complexity-threshold = 15
+too-many-lines-threshold = 100
+too-many-arguments-threshold = 7

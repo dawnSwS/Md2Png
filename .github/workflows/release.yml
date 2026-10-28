@@ -1,0 +1,100 @@
+name: Build Native Engine Installer
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      MD2PNG_NO_DIALOG: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component clippy --component rustfmt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup override set 1.92.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Prepare application icon
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --location --retry 3 \
+            "https://raw.githubusercontent.com/googlefonts/noto-emoji/v2020-09-16-unicode13_1/png/128/emoji_u1f5bc.png" \
+            -o app_icon.png
+          magick app_icon.png -define icon:auto-resize=64,48,32,16 app_icon.ico
+          test -s app_icon.ico
+
+      - name: Read build version
+        if: github.event_name != 'pull_request'
+        run: |
+          # Read the version from Cargo.toml without modifying source files.
+          $manifest = Get-Content -LiteralPath Cargo.toml -Raw
+          $package = [regex]::Match($manifest, '(?ms)^\[package\][^\r\n]*\r?\n(?<body>.*?)(?=^\[|\z)')
+          if (-not $package.Success) { throw '[package] section not found in Cargo.toml' }
+          $versionMatch = [regex]::Match($package.Groups['body'].Value, '(?m)^version[ \t]*=[ \t]*"(?<version>\d+\.\d+\.\d+)"')
+          if (-not $versionMatch.Success) { throw 'A three-part package version is required for the Windows installer' }
+          $version = $versionMatch.Groups['version'].Value
+          foreach ($component in $version.Split('.')) {
+            if ([int]$component -gt 65535) { throw 'Windows version components must be <= 65535' }
+          }
+          "BUILD_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Build version: $version"
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Resolve dependencies for this run
+        run: cargo generate-lockfile
+
+      - name: Deny all compiler and Clippy warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run regression tests
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Build binary
+        run: cargo build --locked --release
+
+      - name: Compile installer
+        if: github.event_name != 'pull_request'
+        run: |
+          $command = Get-Command iscc.exe -ErrorAction SilentlyContinue
+          $iscc = if ($command) { $command.Source } else {
+            Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) { throw 'Inno Setup 6 compiler not found' }
+          & $iscc "/DMyAppVersion=$env:BUILD_VERSION" "/OOutput" "/FMd2Png_Setup_v$env:BUILD_VERSION" installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload installer
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Md2Png_Setup_v${{ env.BUILD_VERSION }}
+          path: Output/*.exe
+          if-no-files-found: error
+          retention-days: 7
